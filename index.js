@@ -12,6 +12,11 @@ const CLAUDE_ENDPOINT = process.env.CLAUDE_ENDPOINT || '';
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || '',
   ...(CLAUDE_ENDPOINT ? { baseURL: CLAUDE_ENDPOINT } : {}),
+  ...(CLAUDE_ENDPOINT ? {
+    defaultHeaders: {
+      'api-key': process.env.ANTHROPIC_API_KEY || '',
+    },
+  } : {}),
 });
 
 async function forwardToClaudeAsync(event, payload) {
