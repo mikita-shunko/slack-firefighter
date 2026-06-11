@@ -1,20 +1,74 @@
-from anthropic import AnthropicFoundry
+import hashlib
+import hmac
+import json
+import os
 
-endpoint = "ENDPOINT"
-deployment_name = "claude-haiku-4-5"
-api_key = "KEY"
+import uvicorn
+from anthropic import Anthropic, AnthropicFoundry
+from dotenv import load_dotenv
+from fastapi import FastAPI, Header, HTTPException, Request
 
-client = AnthropicFoundry(
-    api_key=api_key,
-    base_url=endpoint
+load_dotenv()
+
+PORT = int(os.environ.get("PORT", 3000))
+SECRET = os.environ.get("WEBHOOK_SECRET", "")
+endpoint = os.environ.get("CLAUDE_ENDPOINT", "")
+model = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5")
+api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+system_prompt = os.environ.get(
+    "CLAUDE_SYSTEM_PROMPT",
+    "You are an assistant that analyzes GitHub webhook events.",
 )
 
-message = client.messages.create(
-    model=deployment_name,
-    messages=[
-        {"role": "user", "content": "What is Dynatrace?"}
-    ],
-    max_tokens=1024,
-)
+client = AnthropicFoundry(api_key=api_key, base_url=endpoint) if endpoint else Anthropic(api_key=api_key)
 
-print(message.content)
+app = FastAPI()
+
+
+def verify_signature(body: bytes, sig_header: str) -> bool:
+    expected = "sha256=" + hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig_header)
+
+
+@app.post("/webhook")
+async def webhook(
+    request: Request,
+    x_github_event: str = Header(default="unknown"),
+    x_hub_signature_256: str = Header(default=""),
+):
+    body = await request.body()
+
+    print(f"DEBUG: received {len(body)} bytes, body={body[:200]!r}, event={x_github_event!r}")
+
+    if not body.strip():
+        raise HTTPException(status_code=400, detail="Empty body")
+
+    if SECRET:
+        if not x_hub_signature_256 or not verify_signature(body, x_hub_signature_256):
+            print("Invalid signature — request rejected")
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    payload = json.loads(body)
+    print(f"\n--- GitHub Event: {x_github_event} / action: {payload.get('action')} ---")
+    print(json.dumps(payload, indent=2))
+
+    content = payload.get("issue", {}).get("body") or ""
+    print(f"\n--- Sending to Claude ---\n{content!r}\n---")
+
+    message = client.messages.create(
+        model=model,
+        system=system_prompt,
+        messages=[
+            {"role": "user", "content": "Hi"},
+        ],
+        max_tokens=1024,
+    )
+
+    text = next((b.text for b in message.content if b.type == "text"), "")
+    print(f"\n--- Claude response ---\n{text}")
+
+    return {"ok": True}
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
